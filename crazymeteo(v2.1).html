@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Crazy Meteo</title>
+    <style>
+        body { margin: 0; background: #000; color: #fff; font-family: 'Courier New', Courier, monospace; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        #game-container { position: relative; width: 800px; height: 600px; border: 4px solid #444; box-shadow: 0 0 20px rgba(255,255,255,0.1); }
+        canvas { display: block; background: #050505; }
+        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,0.8); z-index: 10; }
+        h1 { font-size: 60px; color: #ff3333; margin-bottom: 20px; text-shadow: 3px 3px #550000; }
+        .btn { padding: 15px 40px; font-size: 24px; background: #333; color: white; border: 2px solid #fff; cursor: pointer; margin: 10px; transition: 0.2s; }
+        .btn:hover { background: #fff; color: #000; }
+        #info { position: absolute; bottom: 20px; text-align: center; font-size: 14px; color: #aaa; }
+        #hud { position: absolute; top: 20px; left: 20px; font-size: 24px; color: #0f0; pointer-events: none; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="hud" class="hidden">TIME: 0.00s</div>
+    
+    <div id="menu" class="overlay">
+        <h1>CRAZY METEO</h1>
+        <button class="btn" onclick="startGame()">START</button>
+        <button class="btn" onclick="showRecords()">RECORD</button>
+        <div id="info">
+            CONTROLS: ARROW KEYS or NUMPAD 8,5,4,6<br>
+            PAUSE: SPACE BAR
+        </div>
+    </div>
+
+    <div id="countdown" class="overlay hidden">
+        <h1 id="count-text">3</h1>
+    </div>
+
+    <div id="game-over" class="overlay hidden">
+        <h1 style="color: #ff0000;">GAME OVER</h1>
+        <p id="final-score" style="font-size: 24px;"></p>
+        <button class="btn" onclick="backToMenu()">MENU</button>
+    </div>
+
+    <div id="record-screen" class="overlay hidden">
+        <h1>TOP RECORDS</h1>
+        <div id="record-list" style="font-size: 20px; margin-bottom: 20px;"></div>
+        <button class="btn" onclick="backToMenu()">BACK</button>
+    </div>
+
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+</div>
+
+<script>
+/** @type {HTMLCanvasElement} */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const hud = document.getElementById('hud');
+
+// 게임 상태
+let gameState = 'MENU';
+let score = 0;
+let highScore = localStorage.getItem('crazyMeteo_best') || 0;
+let enemies = [];
+let particles = [];
+let animationId;
+let lastTime = 0;
+let spawnTimer = 0;
+let isPaused = false;
+
+// 플레이어 설정
+const player = {
+    x: 400, y: 300,
+    size: 15,
+    speed: 2.5, // 수정: 속도를 절반으로 줄임
+    color: '#00ccff',
+    dx: 0, dy: 0
+};
+
+// 키 입력 상태
+const keys = {};
+
+window.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if(e.code === 'Space') togglePause();
+});
+window.addEventListener('keyup', e => keys[e.code] = false);
+
+function togglePause() {
+    if(gameState === 'PLAYING') {
+        isPaused = !isPaused;
+        if(!isPaused) {
+            lastTime = performance.now();
+            requestAnimationFrame(gameLoop);
+        }
+    }
+}
+
+function startGame() {
+    document.getElementById('menu').classList.add('hidden');
+    document.getElementById('countdown').classList.remove('hidden');
+    let count = 3;
+    const countText = document.getElementById('count-text');
+    countText.innerText = count;
+    
+    const timer = setInterval(() => {
+        count--;
+        if(count > 0) {
+            countText.innerText = count;
+        } else if(count === 0) {
+            countText.innerText = "START!";
+        } else {
+            clearInterval(timer);
+            initGame();
+        }
+    }, 800);
+}
+
+function initGame() {
+    gameState = 'PLAYING';
+    score = 0;
+    enemies = [];
+    particles = [];
+    player.x = canvas.width / 2;
+    player.y = canvas.height / 2;
+    document.getElementById('countdown').classList.add('hidden');
+    document.getElementById('hud').classList.remove('hidden');
+    lastTime = performance.now();
+    requestAnimationFrame(gameLoop);
+}
+
+function spawnEnemy() {
+    const side = Math.floor(Math.random() * 4);
+    let x, y, vx, vy;
+    const speed = 1 + (score / 20); // 수정: 초기 속도 감소 및 속도 증가 폭 감소
+
+    if(side === 0) { x = Math.random()*canvas.width; y = -20; vx = (Math.random()-0.5)*2; vy = speed; } // Top
+    else if(side === 1) { x = canvas.width+20; y = Math.random()*canvas.height; vx = -speed; vy = (Math.random()-0.5)*2; } // Right
+    else if(side === 2) { x = Math.random()*canvas.width; y = canvas.height+20; vx = (Math.random()-0.5)*2; vy = -speed; } // Bottom
+    else { x = -20; y = Math.random()*canvas.height; vx = speed; vy = (Math.random()-0.5)*2; } // Left
+
+    enemies.push({ x, y, vx, vy, size: 8 }); // 수정: 크기를 가장 작은 사이즈(8)로 고정
+}
+
+function update(dt) {
+    if(isPaused) return;
+
+    // 조작 (화살표 및 넘패드 8,5,4,6)
+    player.dx = 0; player.dy = 0;
+    if(keys['ArrowUp'] || keys['Numpad8']) player.dy = -player.speed;
+    if(keys['ArrowDown'] || keys['Numpad5']) player.dy = player.speed;
+    if(keys['ArrowLeft'] || keys['Numpad4']) player.dx = -player.speed;
+    if(keys['ArrowRight'] || keys['Numpad6']) player.dx = player.speed;
+
+    player.x = Math.max(player.size, Math.min(canvas.width - player.size, player.x + player.dx));
+    player.y = Math.max(player.size, Math.min(canvas.height - player.size, player.y + player.dy));
+
+    score += dt / 1000;
+    hud.innerText = `TIME: ${score.toFixed(2)}s`;
+
+    // 운석 생성 주기 (점점 빨라짐)
+    spawnTimer += dt;
+    const spawnRate = Math.max(100, 500 - (score * 5));
+    if(spawnTimer > spawnRate) {
+        spawnEnemy();
+        spawnTimer = 0;
+    }
+
+    // 운석 업데이트 및 충돌 체크
+    for(let i = enemies.length - 1; i >= 0; i--) {
+        const e = enemies[i];
+        e.x += e.vx;
+        e.y += e.vy;
+
+        // 수정: 화면 가장자리에 닿으면 튕겨 나오기
+        if(e.x - e.size < 0 || e.x + e.size > canvas.width) {
+            e.vx *= -1;
+            // 튕겨 나올 때 화면 안쪽으로 확실히 이동시켜서 중복 튕김 방지
+            e.x = Math.max(e.size, Math.min(canvas.width - e.size, e.x));
+        }
+        if(e.y - e.size < 0 || e.y + e.size > canvas.height) {
+            e.vy *= -1;
+            // 튕겨 나올 때 화면 안쪽으로 확실히 이동시켜서 중복 튕김 방지
+            e.y = Math.max(e.size, Math.min(canvas.height - e.size, e.y));
+        }
+
+        // 충돌 (단순 원형 충돌)
+        const dist = Math.hypot(player.x - e.x, player.y - e.y);
+        if(dist < player.size + e.size) {
+            gameOver();
+        }
+    }
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 배경 별 (단순화)
+    ctx.fillStyle = '#fff';
+    for(let i=0; i<20; i++) {
+        ctx.fillRect((Math.sin(i+score)*canvas.width)%canvas.width, (i*40)%canvas.height, 2, 2);
+    }
+
+    // 플레이어 (우주선 모양)
+    ctx.fillStyle = player.color;
+    ctx.beginPath();
+    ctx.moveTo(player.x, player.y - player.size);
+    ctx.lineTo(player.x - player.size, player.y + player.size);
+    ctx.lineTo(player.x + player.size, player.y + player.size);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.stroke();
+
+    // 운석
+    ctx.fillStyle = '#ff4444';
+    enemies.forEach(e => {
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, e.size, 0, Math.PI*2);
+        ctx.fill();
+        // 운석 디테일
+        ctx.strokeStyle = '#300';
+        ctx.stroke();
+    });
+
+    if(isPaused) {
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.fillStyle = '#fff';
+        ctx.font = '40px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText('PAUSED', canvas.width/2, canvas.height/2);
+    }
+}
+
+function gameLoop(time) {
+    if(gameState !== 'PLAYING') return;
+    const dt = time - lastTime;
+    lastTime = time;
+
+    update(dt);
+    draw();
+    if(!isPaused) animationId = requestAnimationFrame(gameLoop);
+}
+
+function gameOver() {
+    gameState = 'FINISHED';
+    cancelAnimationFrame(animationId);
+    
+    document.getElementById('game-over').classList.remove('hidden');
+    document.getElementById('final-score').innerText = `Survived for ${score.toFixed(2)} seconds`;
+    
+    // 기록 저장
+    let records = JSON.parse(localStorage.getItem('crazyMeteo_records') || '[]');
+    records.push(parseFloat(score.toFixed(2)));
+    records.sort((a,b) => b-a);
+    records = records.slice(0, 5); // 상위 5개 유지
+    localStorage.setItem('crazyMeteo_records', JSON.stringify(records));
+}
+
+function showRecords() {
+    document.getElementById('menu').classList.add('hidden');
+    document.getElementById('record-screen').classList.remove('hidden');
+    const list = document.getElementById('record-list');
+    const records = JSON.parse(localStorage.getItem('crazyMeteo_records') || '[]');
+    
+    list.innerHTML = records.length > 0 
+        ? records.map((r, i) => `<div>${i+1}. ${r.toFixed(2)}s</div>`).join('')
+        : "No records yet!";
+}
+
+function backToMenu() {
+    gameState = 'MENU';
+    document.getElementById('game-over').classList.add('hidden');
+    document.getElementById('record-screen').classList.add('hidden');
+    document.getElementById('hud').classList.add('hidden');
+    document.getElementById('menu').classList.remove('hidden');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+}
+</script>
+</body>
+</html>
